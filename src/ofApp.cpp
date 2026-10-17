@@ -2,292 +2,404 @@
 #include "ofApp.h"
 
 void ofApp::setup() {
-    ofBackground(0);
     ofSetFrameRate(60);
     ofSetCircleResolution(48);
+    ofSetVerticalSync(true);
+    ofSetSmoothLighting(false);
+    ofEnableAlphaBlending();
+
+    ofBackground(0);
 
     music.load("You Rock My World.mp3");
     music.setLoop(true);
     music.play();
 
-    // ofSoundGetSpectrum provides the spectrum directly,
-    // so a second FFT is not necessary here.
-    int numBins = 512;
-    spectrumSmoothed.assign(numBins, 0.0f);
+    spectrumSmoothed.assign(512, 0.0f);
+    circleSpectrum.assign(BANDS, 0.0f);
 
-    bass = 0;
-    mids = 0;
-    highs = 0;
-    energy = 0;
-    previousBass = 0;
-    kickPulse = 0;
+    bass = mids = highs = energy = 0.0f;
+    previousBass = kickPulse = 0.0f;
 
-    int count = 100;
+    createLayers();
 
-    positions.resize(count);
-    angles.resize(count);
-    speeds.resize(count);
-    distances.resize(count);
-    particleSizes.resize(count);
-    phases.resize(count);
-    particleBands.resize(count);
+    // Camera looks through the tunnel along the Z axis.
+    camera.setPosition(0, 0, 5000);
+    camera.lookAt(ofVec3f(0, 0, -3500));
+    camera.setNearClip(1.0f);
+    camera.setFarClip(30000.0f);
+    camera.setFov(60.0f);
+}
 
-    for (int i = 0; i < count; i++) {
-        angles[i] = ofRandom(TWO_PI);
+void ofApp::CircleLayer::initialize(float initialZ) {
+    z = initialZ;
+    rotation = ofRandom(TWO_PI);
+    rotationSpeed = ofRandom(-0.001f, 0.001f);
+    initialAlpha = ofRandom(100.0f, 200.0f);
+    lineWeight = ofRandom(1.0f, 2.0f);
 
-        // Individual orbital speeds and directions
-        speeds[i] = ofRandom(0.002f, 0.009f)
-                  * (ofRandom(1.0f) < 0.5f ? -1.0f : 1.0f);
+    vertices.resize(BANDS);
 
-        distances[i] = ofRandom(90, 390);
-        particleSizes[i] = ofRandom(1.5f, 4.0f);
-        phases[i] = ofRandom(TWO_PI);
+    for (int j = 0; j < BANDS; ++j) {
+        vertices[j].set(0, 0, 0);
+    }
+}
 
-        // Different particles respond to different frequencies
-        particleBands[i] = i % 3;
+void ofApp::createLayers() {
+    layers.clear();
+    layers.resize(DEPTH);
+
+    for (int i = 0; i < DEPTH; ++i) {
+        float z = ofMap(
+            i, 0, DEPTH,
+            minDepth, maxDepth
+        );
+
+        layers[i].initialize(z);
     }
 }
 
 float ofApp::getBandEnergy(int firstBin, int lastBin) {
-    float sum = 0;
-    int count = 0;
-
-    firstBin = ofClamp(firstBin, 0, (int)spectrumSmoothed.size() - 1);
-    lastBin = ofClamp(lastBin, firstBin + 1,
-                      (int)spectrumSmoothed.size());
-
-    for (int i = firstBin; i < lastBin; i++) {
-        sum += spectrumSmoothed[i];
-        count++;
+    if (spectrumSmoothed.empty()) {
+        return 0.0f;
     }
 
-    return count > 0 ? sum / count : 0;
+    firstBin = ofClamp(
+        firstBin, 0,
+        static_cast<int>(spectrumSmoothed.size()) - 1
+    );
+
+    lastBin = ofClamp(
+        lastBin, firstBin + 1,
+        static_cast<int>(spectrumSmoothed.size())
+    );
+
+    float sum = 0.0f;
+    int count = 0;
+
+    for (int i = firstBin; i < lastBin; ++i) {
+        sum += spectrumSmoothed[i];
+        ++count;
+    }
+
+    return count > 0 ? sum / count : 0.0f;
+}
+
+float ofApp::getSpectrumValue(int band) const {
+    if (band < 0 || band >= static_cast<int>(circleSpectrum.size())) {
+        return 0.0f;
+    }
+
+    return circleSpectrum[band];
 }
 
 void ofApp::update() {
-    // Read the actual audio spectrum
+    // Read the spectrum from the currently playing audio.
     float* spectrum = ofSoundGetSpectrum(
-        (int)spectrumSmoothed.size()
+        static_cast<int>(spectrumSmoothed.size())
     );
 
-    // Smooth the spectrum to avoid jittery particles
-    for (int i = 0; i < spectrumSmoothed.size(); i++) {
-        float input = spectrum[i];
-
+    for (int i = 0; i < static_cast<int>(spectrumSmoothed.size()); ++i) {
         spectrumSmoothed[i] =
             spectrumSmoothed[i] * 0.78f
-            + input * 0.22f;
+            + spectrum[i] * 0.22f;
     }
 
-    // Separate the spectrum into frequency bands.
-    // These are spectrum-bin ranges, not fixed Hz boundaries.
+    // Preserve the existing audio-reactive frequency bands.
     float rawBass  = getBandEnergy(1, 8);
     float rawMids  = getBandEnergy(8, 45);
     float rawHighs = getBandEnergy(45, 160);
 
-    // Boost small spectrum values into a more visible range.
     rawBass  = ofClamp(rawBass * 18.0f, 0.0f, 1.0f);
     rawMids  = ofClamp(rawMids * 22.0f, 0.0f, 1.0f);
     rawHighs = ofClamp(rawHighs * 30.0f, 0.0f, 1.0f);
 
-    // Smooth the bands independently
     bass  = bass  * 0.82f + rawBass  * 0.18f;
     mids  = mids  * 0.85f + rawMids  * 0.15f;
     highs = highs * 0.75f + rawHighs * 0.25f;
 
     energy = (bass + mids + highs) / 3.0f;
 
-    // Detect sudden bass increases for a punchy kick response
     float bassRise = bass - previousBass;
+
     if (bassRise > 0.015f) {
-        kickPulse = ofClamp(kickPulse + bassRise * 5.0f,
-                            0.0f, 1.0f);
+        kickPulse = ofClamp(
+            kickPulse + bassRise * 5.0f,
+            0.0f, 1.0f
+        );
     }
 
     kickPulse *= 0.90f;
     previousBass = bass;
 
-    float cx = ofGetWidth() * 0.5f;
-    float cy = ofGetHeight() * 0.5f;
+    // Sample 32 values across the usable spectrum.
+    for (int band = 0; band < BANDS; ++band) {
+        int bin = ofMap(band, 0, BANDS - 1, 1, 180);
+        float value = spectrumSmoothed[bin];
 
-    float time = ofGetElapsedTimef();
+        circleSpectrum[band] =
+            circleSpectrum[band] * 0.65f
+            + value * 0.35f;
 
-    for (int i = 0; i < positions.size(); i++) {
-        float bandResponse = 0;
+        circleSpectrum[band] =
+            ofClamp(circleSpectrum[band] * 12.0f, 0.0f, 1.0f);
+    }
 
-        if (particleBands[i] == 0) {
-            bandResponse = bass;
-        } else if (particleBands[i] == 1) {
-            bandResponse = mids;
-        } else {
-            bandResponse = highs;
+    dz = ofMap(energy, 0.0f, 1.0f, 30.0f, 75.0f);
+
+    updateLayers();
+}
+
+void ofApp::updateLayers() {
+    for (auto& layer : layers) {
+        layer.z += dz;
+        layer.rotation += layer.rotationSpeed;
+
+        // Respawn at the back, preserving any movement beyond maxDepth.
+        if (layer.z > maxDepth) {
+            float overshoot = layer.z - maxDepth;
+            layer.initialize(minDepth + overshoot);
         }
-
-        // Mid frequencies accelerate orbital motion
-        float speedMultiplier = 1.0f + mids * 2.0f;
-        angles[i] += speeds[i] * speedMultiplier;
-
-        // Bass expands the orbit, while mids add a second motion
-        float wobble = sin(time * 1.8f + phases[i]) * (8.0f + highs * 14.0f);
-
-        float radius = distances[i]
-                     + bass * 130.0f
-                     + mids * 45.0f
-                     + bandResponse * 45.0f
-                     + kickPulse * 35.0f
-                     + wobble;
-
-        positions[i].x = cx + cos(angles[i]) * radius;
-        positions[i].y = cy + sin(angles[i]) * radius;
     }
 }
 
-void ofApp::drawGlowCircle(float x, float y, float radius,
-                           ofColor color, float alpha) {
-    // Three soft layers give a simple glow-like effect
-    ofEnableBlendMode(OF_BLENDMODE_ADD);
+ofColor ofApp::getBandColor(int band, float alpha) const {
+    // Each part of the spectrum contributes to a different color channel.
+    float red   = ofMap(bass,  0.0f, 1.0f, 40.0f, 200.0f);
+    float green = ofMap(mids,  0.0f, 1.0f, 40.0f, 200.0f);
+    float blue  = ofMap(highs, 0.0f, 1.0f, 40.0f, 200.0f);
 
-    ofSetColor(color, alpha * 0.12f);
-    ofDrawCircle(x, y, radius * 1.8f);
+    // Slight variation along the ring adds a subtle color gradient.
+    float phase = TWO_PI * band / BANDS;
 
-    ofSetColor(color, alpha * 0.22f);
-    ofDrawCircle(x, y, radius * 1.3f);
+    red   += 20.0f * sin(phase);
+    green += 20.0f * sin(phase + TWO_PI / 3.0f);
+    blue  += 20.0f * sin(phase + 2.0f * TWO_PI / 3.0f);
 
-    ofSetColor(color, alpha);
-    ofDrawCircle(x, y, radius);
+    return ofColor(
+        ofClamp(red, 0.0f, 255.0f),
+        ofClamp(green, 0.0f, 255.0f),
+        ofClamp(blue, 0.0f, 255.0f),
+        ofClamp(alpha, 0.0f, 255.0f)
+    );
+}
 
-    ofEnableBlendMode(OF_BLENDMODE_ALPHA);
+float ofApp::getLayerAlpha(const CircleLayer& layer) const {
+    float depthFade = ofMap(
+        layer.z, minDepth, maxDepth,
+        1.0f, 0.4f, true
+    );
+
+    float alpha = layer.initialAlpha * depthFade;
+
+    // The original sketch used overall energy to alter opacity.
+    return alpha * ofMap(energy, 0.0f, 1.0f, 0.65f, 1.0f);
 }
 
 void ofApp::draw() {
-    // Fade the previous frame instead of clearing it.
-    // This leaves smooth trails behind moving particles.
-    ofSetColor(0, 0, 0, 32);
-    ofDrawRectangle(0, 0, ofGetWidth(), ofGetHeight());
-
-    float cx = ofGetWidth() * 0.5f;
-    float cy = ofGetHeight() * 0.5f;
-
-    float time = ofGetElapsedTimef();
-
-    // Center responds primarily to bass and detected transients
-    float coreRadius = 24.0f
-                     + bass * 55.0f
-                     + kickPulse * 28.0f;
-
-    // Outer ring breathes more gently with the mids
-    float ringRadius = coreRadius + 22.0f + mids * 30.0f;
-
-    // Subtle outer halo
-    drawGlowCircle(cx, cy, coreRadius,
-                   ofColor(35, 115, 255),
-                   90 + bass * 100.0f);
-
-    // Bright inner core
-    drawGlowCircle(cx, cy, coreRadius * 0.38f,
-                   ofColor(100, 205, 255),
-                   140 + kickPulse * 100.0f);
-
-    // Rotating, audio-reactive orbital ring
-    ofPushMatrix();
-    ofTranslate(cx, cy);
-    ofRotateDeg(time * 9.0f + mids * 25.0f);
-
-    ofNoFill();
-    ofSetLineWidth(1.2f + bass * 2.0f);
-    ofSetColor(60, 150, 255, 45 + mids * 90.0f);
-    ofDrawCircle(0, 0, ringRadius);
-
-    // A second broken-looking ring made from short arcs
-    ofSetColor(60, 210, 255, 70 + highs * 120.0f);
-    ofSetLineWidth(1.0f);
-
-    float arcRadius = ringRadius + 12.0f + highs * 10.0f;
-
-    for (int i = 0; i < 4; i++) {
-        float start = i * HALF_PI + 0.15f;
-        float end = start + 0.48f + highs * 0.3f;
-
-        ofPolyline arc;
-
-        const int segments = 24;
-
-        for (int j = 0; j <= segments; j++) {
-            float t = (float)j / segments;
-            float a = ofLerp(start, end, t);
-
-            arc.addVertex(
-                cos(a) * arcRadius,
-                sin(a) * arcRadius,
-                0
-            );
-        }
-
-        arc.draw();
+    if (backgroundEnabled) {
+        ofBackground(0);
+    } else {
+        // A low-alpha overlay creates trails.
+        ofSetColor(0, 0, 0, 32);
+        ofDrawRectangle(0, 0, ofGetWidth(), ofGetHeight());
     }
+
+    camera.begin();
+    drawLayers();
+    camera.end();
+}
+
+void ofApp::drawLayers() {
+    // Draw the distant layers first.
+    for (int i = static_cast<int>(layers.size()) - 1; i >= 0; --i) {
+        drawLayer(layers[i]);
+    }
+}
+
+void ofApp::drawLayer(CircleLayer& layer) {
+    ofPushMatrix();
+
+    ofTranslate(0, 0, layer.z);
+    ofRotateZRad(layer.rotation);
+
+    drawCircleWave(layer);
 
     ofPopMatrix();
+}
+
+void ofApp::drawCircleWave(CircleLayer& layer) {
+    switch (shapeMode) {
+        case 1:
+            drawCircleLine(layer);
+            break;
+
+        case 2:
+            drawCircleSegments(layer);
+            break;
+
+        case 3: {
+            // Square-like radial waveform.
+            ofNoFill();
+            ofSetLineWidth(layer.lineWeight);
+
+            for (int j = 0; j < BANDS; ++j) {
+                float angle = TWO_PI * j / BANDS;
+                float spectrumValue = getSpectrumValue(j);
+
+                float side = 1500.0f
+                    * ofMap(spectrumValue, 0.0f, 1.0f, 2.0f, 1.2f);
+
+                float maxComponent = std::max(
+                    std::abs(cos(angle)),
+                    std::abs(sin(angle))
+                );
+
+                float radius = side / std::max(maxComponent, 0.001f);
+
+                layer.vertices[j].set(
+                    radius * cos(angle),
+                    radius * sin(angle),
+                    0
+                );
+            }
+
+            ofBeginShape();
+            for (int j = 0; j < BANDS; ++j) {
+                ofSetColor(getBandColor(j, getLayerAlpha(layer)));
+                ofVertex(layer.vertices[j]);
+            }
+            for (int j = 0; j < 3; ++j) {
+                ofSetColor(getBandColor(j, getLayerAlpha(layer)));
+                ofVertex(layer.vertices[j]);
+            }
+            ofEndShape(false);
+            ofFill();
+            break;
+        }
+
+        case 4: {
+            // Two half-circles, producing the mirrored waveform.
+            ofNoFill();
+            ofSetLineWidth(layer.lineWeight);
+
+            for (int half = 0; half < 2; ++half) {
+                ofBeginShape();
+
+                for (int j = 0; j <= BANDS / 2; ++j) {
+                    int band = j % BANDS;
+                    float angle = PI * j / (BANDS / 2) + half * PI;
+
+                    float radius = ofMap(
+                        getSpectrumValue(band),
+                        0.0f, 1.0f,
+                        3000.0f, 1400.0f
+                    );
+
+                    ofSetColor(getBandColor(band, getLayerAlpha(layer)));
+                    ofVertex(
+                        radius * cos(angle),
+                        radius * sin(angle)
+                    );
+                }
+
+                ofEndShape(false);
+            }
+
+            ofFill();
+            break;
+        }
+    }
+}
+
+void ofApp::drawCircleLine(CircleLayer& layer) {
+    ofNoFill();
+    ofSetLineWidth(layer.lineWeight + energy * 2.0f);
+
+    // Mode 1: circular outline, with stronger frequencies pulling
+    // the points toward the center.
+    for (int j = 0; j < BANDS; ++j) {
+        float angle = TWO_PI * j / BANDS;
+        float value = getSpectrumValue(j);
+
+        float radius = 4000.0f;
+
+        if (value > 0.01f) {
+            radius = ofMap(value, 0.01f, 1.0f, 3600.0f, 2000.0f, true);
+        }
+
+        layer.vertices[j].set(
+            radius * cos(angle),
+            radius * sin(angle),
+            0
+        );
+    }
+
+    float alpha = getLayerAlpha(layer);
+
+    ofBeginShape();
+    for (int j = 0; j < BANDS; ++j) {
+        ofSetColor(getBandColor(j, alpha));
+        ofVertex(layer.vertices[j]);
+    }
+
+    // Close the curve.
+    for (int j = 0; j < 3; ++j) {
+        ofSetColor(getBandColor(j, alpha));
+        ofVertex(layer.vertices[j]);
+    }
+    ofEndShape(false);
+
     ofFill();
+}
 
-    // Particles: each group reacts differently to the spectrum
-    for (int i = 0; i < positions.size(); i++) {
-        float bandResponse = 0;
+void ofApp::drawCircleSegments(CircleLayer& layer) {
+    // Mode 2: radial segments rather than a connected outline.
+    float alpha = getLayerAlpha(layer);
 
-        ofColor color;
+    ofSetLineWidth(layer.lineWeight);
 
-        if (particleBands[i] == 0) {
-            bandResponse = bass;
-            color = ofColor(60, 140, 255);       // Bass: blue
-        } else if (particleBands[i] == 1) {
-            bandResponse = mids;
-            color = ofColor(40, 220, 255);       // Mids: cyan
-        } else {
-            bandResponse = highs;
-            color = ofColor(180, 230, 255);      // Highs: pale blue
-        }
+    for (int j = 0; j < BANDS; ++j) {
+        float angle = TWO_PI * j / BANDS;
+        float radius = ofMap(
+            getSpectrumValue(j), 0.0f, 1.0f,
+            2000.0f, 4000.0f
+        );
 
-        float size = particleSizes[i]
-                   + bandResponse * 4.0f
-                   + kickPulse * 2.0f;
-
-        float alpha = 130.0f + bandResponse * 125.0f;
-
-        // A few brighter particles make the image pop
-        if (i % 9 == 0) {
-            size *= 1.5f;
-            alpha = 255;
-        }
-
-        drawGlowCircle(positions[i].x, positions[i].y,
-                       size, color, alpha);
-
-        // Fine radial connections, more visible on stronger beats
-        if (i % 5 == 0) {
-            ofSetColor(color, 12 + energy * 45.0f);
-            ofSetLineWidth(1.0f);
-            ofDrawLine(cx, cy, positions[i].x, positions[i].y);
-        }
+        ofSetColor(getBandColor(j, alpha));
+        ofDrawLine(
+            radius * cos(angle),
+            radius * sin(angle),
+            (radius + 100.0f) * cos(angle),
+            (radius + 100.0f) * sin(angle)
+        );
     }
+}
 
-    // Tiny treble sparkles around the center
-    ofEnableBlendMode(OF_BLENDMODE_ADD);
+void ofApp::keyPressed(int key) {
+    switch (key) {
+        case '1':
+        case '2':
+        case '3':
+        case '4':
+            shapeMode = key - '0';
+            break;
 
-    for (int i = 0; i < 12; i++) {
-        float a = time * (0.25f + i * 0.015f)
-                + i * TWO_PI / 12.0f;
+        case 'b':
+        case 'B':
+            backgroundEnabled = !backgroundEnabled;
+            break;
 
-        float r = ringRadius + 20.0f
-                + sin(time * 3.0f + i) * 8.0f
-                + highs * 25.0f;
+        case ' ':
+            if (music.isPlaying()) {
+                music.stop();
+            } else {
+                music.play();
+            }
+            break;
 
-        float x = cx + cos(a) * r;
-        float y = cy + sin(a) * r;
-
-        float sparkleSize = 1.0f + highs * 3.0f;
-
-        ofSetColor(130, 225, 255, 80 + highs * 170.0f);
-        ofDrawCircle(x, y, sparkleSize);
+        case 'r':
+        case 'R':
+            createLayers();
+            break;
     }
-
-    ofEnableBlendMode(OF_BLENDMODE_ALPHA);
 }
