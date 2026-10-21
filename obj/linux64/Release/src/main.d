@@ -321,7 +321,8 @@ obj/linux64/Release/src/main.o: src/main.cpp \
  ../../../libs/openFrameworks/video/ofVideoPlayer.h \
  ../../../libs/openFrameworks/3d/of3dUtils.h \
  ../../../libs/openFrameworks/3d/ofCamera.h \
- ../../../libs/openFrameworks/3d/ofEasyCam.h src/ofApp.h
+ ../../../libs/openFrameworks/3d/ofEasyCam.h src/ofApp.h \
+ src/AudioInputManager.h ../../../addons/ofxFft/src/ofxFft.h
 ../../../libs/openFrameworks/ofMain.h:
 ../../../libs/openFrameworks/utils/ofConstants.h:
 ../../../libs/tess2/include/tesselator.h:
@@ -646,3 +647,5 @@ obj/linux64/Release/src/main.o: src/main.cpp \
 ../../../libs/openFrameworks/3d/ofCamera.h:
 ../../../libs/openFrameworks/3d/ofEasyCam.h:
 src/ofApp.h:
+src/AudioInputManager.h:
+../../../addons/ofxFft/src/ofxFft.h:

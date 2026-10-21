@@ -2,6 +2,7 @@
 #pragma once
 
 #include "ofMain.h"
+#include "AudioInputManager.h"
 #include <vector>
 
 class ofApp : public ofBaseApp {
@@ -12,6 +13,15 @@ public:
     void keyPressed(int key);
 
     ofSoundPlayer music;
+    AudioInputManager audioInput;
+
+    enum class AudioMode {
+        Mp3,
+        Output,
+        Input
+    };
+
+    AudioMode audioMode = AudioMode::Mp3;
 
     // Audio analysis
     std::vector<float> spectrumSmoothed;
@@ -65,4 +75,7 @@ public:
     float getLayerAlpha(const CircleLayer& layer) const;
 
     ofEasyCam camera;
+
+    void setAudioMode(AudioMode mode);
+    void updateAudioSpectrum();
 };

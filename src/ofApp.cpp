@@ -13,6 +13,7 @@ void ofApp::setup() {
     music.load("You Rock My World.mp3");
     music.setLoop(true);
     music.play();
+    setAudioMode(AudioMode::Mp3);
 
     spectrumSmoothed.assign(512, 0.0f);
     circleSpectrum.assign(BANDS, 0.0f);
@@ -28,6 +29,69 @@ void ofApp::setup() {
     camera.setNearClip(1.0f);
     camera.setFarClip(30000.0f);
     camera.setFov(60.0f);
+}
+
+void ofApp::setAudioMode(AudioMode mode) {
+    if (mode == AudioMode::Input) {
+        audioMode = mode;
+        music.stop();
+        audioInput.close();
+        audioInput.listDevices();
+        return;
+    }
+
+    if (mode == AudioMode::Mp3) {
+        audioInput.close();
+        audioMode = mode;
+        if (!music.isPlaying()) {
+            music.play();
+        }
+        return;
+    }
+
+    if (mode == AudioMode::Output) {
+        audioMode = mode;
+        music.stop();
+        audioInput.startOutputMonitor();
+    }
+}
+
+void ofApp::updateAudioSpectrum() {
+    if (audioMode == AudioMode::Input || audioMode == AudioMode::Output) {
+        auto inputSpectrum = audioInput.getSpectrum();
+        const int count = std::min(
+            static_cast<int>(spectrumSmoothed.size()),
+            static_cast<int>(inputSpectrum.size())
+        );
+
+        for (int i = 0; i < count; ++i) {
+            spectrumSmoothed[i] =
+                spectrumSmoothed[i] * 0.78f
+                + inputSpectrum[i] * 0.22f;
+        }
+
+        for (int i = count; i < static_cast<int>(spectrumSmoothed.size()); ++i) {
+            spectrumSmoothed[i] *= 0.78f;
+        }
+        return;
+    }
+
+    float* spectrum = ofSoundGetSpectrum(
+        static_cast<int>(spectrumSmoothed.size())
+    );
+
+    if (!spectrum) {
+        for (float& value : spectrumSmoothed) {
+            value *= 0.78f;
+        }
+        return;
+    }
+
+    for (int i = 0; i < static_cast<int>(spectrumSmoothed.size()); ++i) {
+        spectrumSmoothed[i] =
+            spectrumSmoothed[i] * 0.78f
+            + spectrum[i] * 0.22f;
+    }
 }
 
 void ofApp::CircleLayer::initialize(float initialZ) {
@@ -93,16 +157,7 @@ float ofApp::getSpectrumValue(int band) const {
 }
 
 void ofApp::update() {
-    // Read the spectrum from the currently playing audio.
-    float* spectrum = ofSoundGetSpectrum(
-        static_cast<int>(spectrumSmoothed.size())
-    );
-
-    for (int i = 0; i < static_cast<int>(spectrumSmoothed.size()); ++i) {
-        spectrumSmoothed[i] =
-            spectrumSmoothed[i] * 0.78f
-            + spectrum[i] * 0.22f;
-    }
+    updateAudioSpectrum();
 
     // Preserve the existing audio-reactive frequency bands.
     float rawBass  = getBandEnergy(1, 8);
@@ -376,6 +431,27 @@ void ofApp::drawCircleSegments(CircleLayer& layer) {
 }
 
 void ofApp::keyPressed(int key) {
+    if (key == 'm' || key == 'M') {
+        setAudioMode(AudioMode::Mp3);
+        return;
+    }
+
+    if (key == 'o' || key == 'O') {
+        setAudioMode(AudioMode::Output);
+        return;
+    }
+
+    if (key == 'i' || key == 'I'
+        || audioMode == AudioMode::Input
+        || audioInput.isSelectingDevice()) {
+        if (key == 'i' || key == 'I') {
+            setAudioMode(AudioMode::Input);
+        } else {
+            audioInput.handleKey(key);
+        }
+        return;
+    }
+
     switch (key) {
         case '1':
         case '2':
@@ -390,6 +466,9 @@ void ofApp::keyPressed(int key) {
             break;
 
         case ' ':
+            if (audioMode != AudioMode::Mp3) {
+                break;
+            }
             if (music.isPlaying()) {
                 music.stop();
             } else {
